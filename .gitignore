@@ -1,0 +1,12 @@
+.env
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+.idea/
+.vscode/
+*.log
+alembic/versions/*.pyc
+.DS_Store
+EOF
