@@ -1,5 +1,6 @@
 import uuid
-from fastapi import APIRouter, Depends, HTTPException, Request
+from datetime import datetime, timedelta
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.api.deps import get_current_active_user, get_db
 from app.core.plans import get_all_plans, get_plan
@@ -8,6 +9,13 @@ from app.models.user import User
 from app.models.transaction import Transaction, TransactionStatus
 
 router = APIRouter()
+
+SUBSCRIPTION_PERIOD_DAYS = {
+    "free": None,  # No expiration
+    "basic": 30,
+    "pro": 30,
+    "enterprise": 30
+}
 
 @router.get("/plans")
 def list_plans():
@@ -26,14 +34,21 @@ def subscribe_to_plan(
     
     if plan_id == "free":
         current_user.subscription_tier = plan_id
+        current_user.subscription_start_date = None
+        current_user.subscription_end_date = None
         db.commit()
         return {"message": "Subscribed to Free plan", "plan": plan}
+    
+    # Calculate subscription dates
+    start_date = datetime.utcnow()
+    period_days = SUBSCRIPTION_PERIOD_DAYS.get(plan_id, 30)
+    end_date = start_date + timedelta(days=period_days)
     
     # Initialize Paystack payment
     amount_kobo = plan["price"] * 100
     reference = f"sub_{current_user.id}_{uuid.uuid4().hex[:8]}"
     
-    # Create pending transaction record
+    # Create pending transaction
     transaction = Transaction(
         user_id=current_user.id,
         reference=reference,
@@ -53,7 +68,9 @@ def subscribe_to_plan(
         metadata={
             "user_id": str(current_user.id), 
             "plan_id": plan_id,
-            "reference": reference
+            "reference": reference,
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat()
         }
     )
     
@@ -63,73 +80,81 @@ def subscribe_to_plan(
             "authorization_url": result["data"]["authorization_url"],
             "reference": reference,
             "plan": plan_id,
-            "amount": plan["price"]
+            "amount": plan["price"],
+            "period_days": period_days,
+            "valid_until": end_date.isoformat()
         }
     else:
-        # Mark transaction as failed
         transaction.status = TransactionStatus.FAILED
         transaction.gateway_response = result.get("message")
         db.commit()
-        
-        raise HTTPException(
-            status_code=400, 
-            detail=f"Payment initialization failed: {result.get('message')}"
-        )
+        raise HTTPException(status_code=400, detail=f"Payment initialization failed: {result.get('message')}")
 
 @router.get("/verify")
-def verify_payment(
-    reference: str, 
-    db: Session = Depends(get_db)
-):
-    """Manual verification (fallback if webhook fails)"""
+def verify_payment(reference: str, db: Session = Depends(get_db)):
+    """Verify payment and activate subscription"""
     result = PaystackService.verify_transaction(reference)
     
     if not result.get("status"):
         raise HTTPException(status_code=400, detail="Verification failed")
     
     data = result["data"]
-    
-    # Find transaction
-    transaction = db.query(Transaction).filter(
-        Transaction.reference == reference
-    ).first()
+    transaction = db.query(Transaction).filter(Transaction.reference == reference).first()
     
     if not transaction:
         raise HTTPException(status_code=404, detail="Transaction not found")
     
-    # Check if payment was successful
     if data["status"] != "success":
         transaction.status = TransactionStatus.FAILED
-        transaction.gateway_response = data.get("gateway_response")
         db.commit()
-        
-        return {
-            "message": "Payment not successful", 
-            "status": data["status"],
-            "gateway_response": data.get("gateway_response")
-        }
+        return {"message": "Payment not successful", "status": data["status"]}
+    
+    # Get metadata
+    metadata = data.get("metadata", {})
+    start_date = datetime.fromisoformat(metadata.get("start_date", datetime.utcnow().isoformat()))
+    end_date = datetime.fromisoformat(metadata.get("end_date", (datetime.utcnow() + timedelta(days=30)).isoformat()))
     
     # Update transaction
     transaction.status = TransactionStatus.SUCCESS
     transaction.paystack_transaction_id = str(data.get("id"))
     transaction.payment_channel = data.get("channel")
     transaction.paid_at = data.get("paid_at")
-    transaction.gateway_response = data.get("gateway_response")
+    db.commit()
     
-    # Update user subscription
+    # Update user subscription with dates
     user = db.query(User).filter(User.id == transaction.user_id).first()
     if user:
         user.subscription_tier = transaction.plan_id
-    
-    db.commit()
+        user.subscription_start_date = start_date
+        user.subscription_end_date = end_date
+        db.commit()
     
     return {
         "message": "Payment successful! Subscription activated.",
         "plan": transaction.plan_id,
-        "amount_paid": data["amount"] / 100,
-        "currency": data["currency"],
-        "status": "active",
-        "user_email": user.email if user else None
+        "valid_from": start_date.isoformat(),
+        "valid_until": end_date.isoformat(),
+        "status": "active"
+    }
+
+@router.get("/status")
+def get_subscription_status(current_user: User = Depends(get_current_active_user)):
+    """Get current subscription status"""
+    is_active = current_user.is_subscription_active()
+    
+    return {
+        "user_id": str(current_user.id),
+        "email": current_user.email,
+        "subscription_tier": current_user.subscription_tier,
+        "is_active": is_active,
+        "valid_from": current_user.subscription_start_date.isoformat() if current_user.subscription_start_date else None,
+        "valid_until": current_user.subscription_end_date.isoformat() if current_user.subscription_end_date else None,
+        "auto_renew": current_user.auto_renew,
+        "days_remaining": (
+            (current_user.subscription_end_date - datetime.now(current_user.subscription_end_date.tzinfo)).days 
+            if current_user.subscription_end_date and current_user.subscription_tier != "free"
+            else None
+        )
     }
 
 @router.get("/history")
@@ -137,7 +162,7 @@ def get_payment_history(
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
-    """Get current user's payment history"""
+    """Get payment history"""
     transactions = db.query(Transaction).filter(
         Transaction.user_id == current_user.id
     ).order_by(Transaction.created_at.desc()).all()
@@ -160,24 +185,34 @@ def get_payment_history(
         ]
     }
 
-@router.post("/test-verify/{reference}")
-def test_verify_payment(
-    reference: str,
-    plan_id: str = "basic",
+@router.post("/cancel")
+def cancel_subscription(
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
-    """TEST ONLY: Simulate a successful payment verification"""
+    """Cancel auto-renewal (downgrade to free at end of period)"""
+    if current_user.subscription_tier == "free":
+        raise HTTPException(status_code=400, detail="No active paid subscription")
+    
+    current_user.auto_renew = False
+    db.commit()
+    
+    return {
+        "message": "Auto-renewal cancelled. You will be downgraded to Free at the end of your billing period.",
+        "current_plan": current_user.subscription_tier,
+        "valid_until": current_user.subscription_end_date.isoformat() if current_user.subscription_end_date else None
+    }
+
+@router.post("/test-verify/{reference}")
+def test_verify_payment(reference: str, plan_id: str = "basic", db: Session = Depends(get_db)):
+    """TEST: Simulate payment"""
     try:
         parts = reference.split("_")
         user_id = parts[1]
     except:
-        raise HTTPException(status_code=400, detail="Invalid reference format")
+        raise HTTPException(status_code=400, detail="Invalid reference")
     
-    # Find or create transaction
-    transaction = db.query(Transaction).filter(
-        Transaction.reference == reference
-    ).first()
-    
+    transaction = db.query(Transaction).filter(Transaction.reference == reference).first()
     if not transaction:
         transaction = Transaction(
             user_id=user_id,
@@ -188,24 +223,24 @@ def test_verify_payment(
         )
         db.add(transaction)
     
-    # Update transaction
+    start_date = datetime.utcnow()
+    end_date = start_date + timedelta(days=30)
+    
     transaction.status = TransactionStatus.SUCCESS
-    transaction.paid_at = "2026-02-12T12:00:00Z"
-    transaction.payment_channel = "card"
+    transaction.paid_at = datetime.utcnow().isoformat()
     
-    # Update user
     user = db.query(User).filter(User.id == user_id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    
-    user.subscription_tier = plan_id
+    if user:
+        user.subscription_tier = plan_id
+        user.subscription_start_date = start_date
+        user.subscription_end_date = end_date
     
     db.commit()
     
     return {
-        "message": "TEST: Payment simulated successfully",
+        "message": "TEST: Payment simulated",
         "plan": plan_id,
-        "status": "active",
-        "user_email": user.email,
-        "note": "This is a test endpoint for development only"
+        "valid_from": start_date.isoformat(),
+        "valid_until": end_date.isoformat(),
+        "status": "active"
     }
