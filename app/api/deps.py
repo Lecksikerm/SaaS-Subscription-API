@@ -6,8 +6,8 @@ from jose import JWTError
 from app.db.session import SessionLocal
 from app.core.security import decode_token
 from app.models.user import User
+from app.schemas.user import TokenPayload
 
-# Simple HTTP Bearer - just asks for "Bearer <token>"
 security = HTTPBearer()
 
 def get_db() -> Generator:
@@ -37,6 +37,8 @@ def get_current_user(
         user_id: str = payload.get("sub")
         if user_id is None:
             raise credentials_exception
+        
+        token_data = TokenPayload(sub=user_id)
     except JWTError:
         raise credentials_exception
     
@@ -52,4 +54,14 @@ def get_current_user(
 def get_current_active_user(
     current_user: User = Depends(get_current_user)
 ) -> User:
+    return current_user
+
+def get_current_admin(
+    current_user: User = Depends(get_current_user)
+) -> User:
+    if not current_user.is_superuser:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required"
+        )
     return current_user
