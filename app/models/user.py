@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import Column, String, Boolean, DateTime, Enum
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
+from sqlalchemy.orm import relationship
 from app.db.base import Base
 
 class SubscriptionTier(str, enum.Enum):
@@ -20,6 +21,9 @@ class User(Base):
     password_hash = Column(String(255), nullable=False)
     full_name = Column(String(255), nullable=True)
     
+    # Relationship to transactions
+    transactions = relationship("Transaction", back_populates="user")
+    
     # Subscription fields
     subscription_tier = Column(Enum(SubscriptionTier), default=SubscriptionTier.FREE)
     subscription_start_date = Column(DateTime(timezone=True), nullable=True)
@@ -27,7 +31,7 @@ class User(Base):
     is_active = Column(Boolean, default=True)
     is_verified = Column(Boolean, default=False)
     is_superuser = Column(Boolean, default=False)
-    auto_renew = Column(Boolean, default=True)  # For automatic renewal
+    auto_renew = Column(Boolean, default=True)
     
     # Stripe/Paystack customer ID
     payment_customer_id = Column(String(255), nullable=True)
