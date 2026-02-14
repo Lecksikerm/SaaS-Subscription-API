@@ -5,8 +5,8 @@ class Settings(BaseSettings):
     app_name: str = "SaaS Subscription API"
     debug: bool = False
     
-    # Database - handle both local and Render formats
-    database_url: str = "postgresql://postgres:postgres@localhost:5434/saas_db"
+    # Database - Render will provide this
+    database_url: str = "postgresql://postgres:postgres@localhost:5432/saas_db"
     
     # Redis
     redis_url: str = "redis://localhost:6379/0"
@@ -22,10 +22,12 @@ class Settings(BaseSettings):
 
     class Config:
         env_file = ".env"
+        # Allow extra fields from environment
+        extra = "ignore"
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        # Render adds 'postgres://' but SQLAlchemy needs 'postgresql://'
+        # Fix Render's postgres:// URL to postgresql://
         if self.database_url and self.database_url.startswith("postgres://"):
             self.database_url = self.database_url.replace("postgres://", "postgresql://", 1)
 
