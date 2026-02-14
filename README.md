@@ -59,7 +59,7 @@ Copy
 
 ```bash
 # Clone repository
-git clone https://github.com/yourusername/saas-subscription-api.git
+git clone https://github.com/Lecksikerm/saas-subscription-api.git
 cd saas-subscription-api
 
 # Create virtual environment
