@@ -3,6 +3,7 @@ from datetime import datetime
 from sqlalchemy import Column, String, Numeric, DateTime, ForeignKey, Enum, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
+from sqlalchemy.orm import relationship
 import enum
 from app.db.base import Base
 
@@ -17,6 +18,9 @@ class Transaction(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
+    
+    # Relationship to User
+    user = relationship("User", back_populates="transactions")
     
     # Paystack fields
     reference = Column(String(255), unique=True, index=True, nullable=False)
