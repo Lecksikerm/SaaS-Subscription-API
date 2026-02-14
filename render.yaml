@@ -1,0 +1,55 @@
+services:
+  # PostgreSQL Database
+  - type: pserv
+    name: saas-postgres
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile.postgres
+    envVars:
+      - key: POSTGRES_USER
+        value: postgres
+      - key: POSTGRES_PASSWORD
+        generateValue: true
+      - key: POSTGRES_DB
+        value: saas_db
+
+  # Redis Cache
+  - type: pserv
+    name: saas-redis
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile.redis
+
+  # FastAPI Web Service
+  - type: web
+    name: saas-api
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: ./startup.sh  
+    healthCheckPath: /health    
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: DATABASE_URL
+        fromService:
+          type: pserv
+          name: saas-postgres
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: pserv
+          name: saas-redis
+          property: connectionString
+      - key: SECRET_KEY
+        generateValue: true
+      - key: ALGORITHM
+        value: HS256
+      - key: ACCESS_TOKEN_EXPIRE_MINUTES
+        value: 60
+      - key: DEBUG
+        value: false
+      - key: PAYSTACK_SECRET_KEY
+        sync: false  
+      - key: PAYSTACK_WEBHOOK_SECRET
+        sync: false
