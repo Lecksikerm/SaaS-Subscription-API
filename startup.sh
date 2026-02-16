@@ -1,14 +1,13 @@
 #!/bin/bash
 
-echo "🚀 Starting SaaS API..."
-echo "📊 Database URL: ${DATABASE_URL:0:50}..."
+echo " Starting SaaS API..."
 
-# Wait a moment for database to be ready
-sleep 3
+# Wait for database to be ready
+sleep 5
 
-# Run database migrations
-echo "📊 Running migrations..."
-alembic upgrade head
+# Create tables if they don't exist
+echo " Creating database tables..."
+python init_db.py || echo " Tables may already exist"
 
 # Start application
 echo "✅ Starting server..."
